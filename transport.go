@@ -75,3 +75,26 @@ func (m *Manager) Close() error {
 
 	return nil
 }
+
+func (m *Manager) CloseConn(serverID raft.ServerID) error {
+	conn := m.removeConn(serverID)
+	if conn != nil {
+		conn.mtx.Lock()
+		conn.mtx.Unlock()
+		return conn.clientConn.Close()
+	}
+
+	return nil
+}
+
+func (m *Manager) removeConn(serverID raft.ServerID) *conn {
+	m.connectionsMtx.Lock()
+	defer m.connectionsMtx.Unlock()
+
+	conn, ok := m.connections[serverID]
+	if !ok {
+		return nil
+	}
+	delete(m.connections, serverID)
+	return conn
+}
