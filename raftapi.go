@@ -2,13 +2,15 @@ package transport
 
 import (
 	"context"
-	"io"
-	"sync"
-	"time"
-
 	pb "github.com/Jille/raft-grpc-transport/proto"
 	"github.com/hashicorp/raft"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"io"
+	"log"
+	"sync"
+	"time"
 )
 
 // These are calls from the Raft engine that we need to send out over gRPC.
@@ -71,6 +73,7 @@ func (r raftAPI) AppendEntries(id raft.ServerID, target raft.ServerAddress, args
 	}
 	ret, err := c.AppendEntries(ctx, encodeAppendEntriesRequest(args))
 	if err != nil {
+		r.maybeCloseConn(id, err)
 		return err
 	}
 	*resp = *decodeAppendEntriesResponse(ret)
@@ -85,6 +88,7 @@ func (r raftAPI) RequestVote(id raft.ServerID, target raft.ServerAddress, args *
 	}
 	ret, err := c.RequestVote(context.TODO(), encodeRequestVoteRequest(args))
 	if err != nil {
+		r.maybeCloseConn(id, err)
 		return err
 	}
 	*resp = *decodeRequestVoteResponse(ret)
@@ -99,6 +103,7 @@ func (r raftAPI) TimeoutNow(id raft.ServerID, target raft.ServerAddress, args *r
 	}
 	ret, err := c.TimeoutNow(context.TODO(), encodeTimeoutNowRequest(args))
 	if err != nil {
+		r.maybeCloseConn(id, err)
 		return err
 	}
 	*resp = *decodeTimeoutNowResponse(ret)
@@ -114,9 +119,11 @@ func (r raftAPI) InstallSnapshot(id raft.ServerID, target raft.ServerAddress, re
 	}
 	stream, err := c.InstallSnapshot(context.TODO())
 	if err != nil {
+		r.maybeCloseConn(id, err)
 		return err
 	}
 	if err := stream.Send(encodeInstallSnapshotRequest(req)); err != nil {
+		r.maybeCloseConn(id, err)
 		return err
 	}
 	var buf [16384]byte
@@ -126,16 +133,19 @@ func (r raftAPI) InstallSnapshot(id raft.ServerID, target raft.ServerAddress, re
 			break
 		}
 		if err != nil {
+			r.maybeCloseConn(id, err)
 			return err
 		}
 		if err := stream.Send(&pb.InstallSnapshotRequest{
 			Data: buf[:n],
 		}); err != nil {
+			r.maybeCloseConn(id, err)
 			return err
 		}
 	}
 	ret, err := stream.CloseAndRecv()
 	if err != nil {
+		r.maybeCloseConn(id, err)
 		return err
 	}
 	*resp = *decodeInstallSnapshotResponse(ret)
@@ -154,6 +164,7 @@ func (r raftAPI) AppendEntriesPipeline(id raft.ServerID, target raft.ServerAddre
 	stream, err := c.AppendEntriesPipeline(ctx)
 	if err != nil {
 		cancel()
+		r.maybeCloseConn(id, err)
 		return nil, err
 	}
 	rpa := raftPipelineAPI{
@@ -281,4 +292,12 @@ func (r raftAPI) SetHeartbeatHandler(cb func(rpc raft.RPC)) {
 	r.manager.heartbeatFuncMtx.Lock()
 	r.manager.heartbeatFunc = cb
 	r.manager.heartbeatFuncMtx.Unlock()
+}
+
+func (r raftAPI) maybeCloseConn(serverID raft.ServerID, err error) {
+	st, _ := status.FromError(err)
+	if st.Code() == codes.Unavailable || st.Code() == codes.DeadlineExceeded {
+		log.Printf("err is Connection error, will colse connection")
+		r.manager.CloseConn(serverID)
+	}
 }
