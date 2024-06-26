@@ -296,8 +296,8 @@ func (r raftAPI) SetHeartbeatHandler(cb func(rpc raft.RPC)) {
 
 func (r raftAPI) maybeCloseConn(serverID raft.ServerID, err error) {
 	st, _ := status.FromError(err)
-	if st.Code() == codes.Unavailable || st.Code() == codes.DeadlineExceeded {
-		log.Printf("err is Connection error, will colse connection")
+	if st.Code() == codes.Unavailable {
+		log.Printf("raft peer connection unavailable, close [%s] ", serverID)
 		r.manager.CloseConn(serverID)
 	}
 }
